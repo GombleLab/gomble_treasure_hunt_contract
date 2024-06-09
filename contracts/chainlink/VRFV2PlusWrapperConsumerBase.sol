@@ -3,6 +3,7 @@ pragma solidity ^0.8.0;
 
 import {LinkTokenInterface} from "./LinkTokenInterface.sol";
 import {IVRFV2PlusWrapper} from "./IVRFV2PlusWrapper.sol";
+import "../Storage.sol";
 
 /**
  *
@@ -28,21 +29,8 @@ import {IVRFV2PlusWrapper} from "./IVRFV2PlusWrapper.sol";
  * @dev Consumers must implement the fullfillRandomWords function, which will be called during
  * @dev fulfillment with the randomness result.
  */
-abstract contract VRFV2PlusWrapperConsumerBase {
+abstract contract VRFV2PlusWrapperConsumerBase is Storage {
     error OnlyVRFWrapperCanFulfill(address have, address want);
-
-    LinkTokenInterface internal immutable i_linkToken;
-    IVRFV2PlusWrapper public immutable i_vrfV2PlusWrapper;
-
-    /**
-     * @param _vrfV2PlusWrapper is the address of the VRFV2Wrapper contract
-   */
-    constructor(address _vrfV2PlusWrapper) {
-        IVRFV2PlusWrapper vrfV2PlusWrapper = IVRFV2PlusWrapper(_vrfV2PlusWrapper);
-
-        i_linkToken = LinkTokenInterface(vrfV2PlusWrapper.link());
-        i_vrfV2PlusWrapper = vrfV2PlusWrapper;
-    }
 
     /**
      * @dev Requests randomness from the VRF V2+ wrapper.
@@ -70,25 +58,6 @@ abstract contract VRFV2PlusWrapperConsumerBase {
             abi.encode(_callbackGasLimit, _requestConfirmations, _numWords, extraArgs)
         );
         return (i_vrfV2PlusWrapper.lastRequestId(), reqPrice);
-    }
-
-    // solhint-disable-next-line chainlink-solidity/prefix-internal-functions-with-underscore
-    function requestRandomnessPayInNative(
-        uint32 _callbackGasLimit,
-        uint16 _requestConfirmations,
-        uint32 _numWords,
-        bytes memory extraArgs
-    ) internal returns (uint256 requestId, uint256 requestPrice) {
-        requestPrice = i_vrfV2PlusWrapper.calculateRequestPriceNative(_callbackGasLimit, _numWords);
-        return (
-        i_vrfV2PlusWrapper.requestRandomWordsInNative{value: requestPrice}(
-            _callbackGasLimit,
-            _requestConfirmations,
-            _numWords,
-            extraArgs
-        ),
-        requestPrice
-        );
     }
 
     /**
