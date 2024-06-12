@@ -26,6 +26,7 @@ contract BaseFacet is Storage {
     }
 
     function _getAssetPriceInUsd(address asset) internal view returns (uint256) {
+        require(assets[asset], 'Not Supported Asset');
         if (asset == USDT || asset == USDC) {
             return 10 ** 8;
         }

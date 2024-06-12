@@ -55,7 +55,7 @@ contract OpenFacet is BaseFacet {
         address user = msg.sender;
         require(user != referralUser, 'Not Allowed to Refer Yourself');
         require(!referralNonce[user][nonce], 'Already Used Nonce');
-        _verifyReferralSignature(uidOwner, userUid, referralUser, nonce, signature);
+        _verifyReferralSignature(uidOwner, user, userUid, referralUser, nonce, signature);
         referralNonce[user][nonce] = true;
         _openSpot(user, userUid, gameId, tiles, asset, maxAvgAmount, referralUser);
     }
@@ -100,6 +100,7 @@ contract OpenFacet is BaseFacet {
         require(gameInfo.isPlaying, 'Game Not in Progress');
         require(block.timestamp <= gameInfo.startTime + maxGameTime, 'Already Ended Game');
         require(gameInfo.leftNumTicket != 0 || gameInfo.leftNumTreasure != 0, 'No Ticket And Treasure');
+        require(assets[asset], 'Not Supported Asset');
 
         LocalOpenSpotStruct memory localStruct;
         for (uint256 i = 0; i < tiles.length; i++) {
@@ -206,17 +207,17 @@ contract OpenFacet is BaseFacet {
         require(address(this).balance >= i_vrfV2PlusWrapper.calculateRequestPriceNative(callbackGasLimit, uint32(_tiles.length)), 'Insufficient Balance for VRF Request');
         (requestId, requestPaid) = requestRandomnessPayInNative(callbackGasLimit, requestConfirmations, uint32(_tiles.length), extraArgs);
         requests[requestId] = RequestStatus({
-            requestPaid : requestPaid,
-            randomWords : new uint256[](0),
-            tiles : _tiles,
-            tileCostsInAmount : _tileCostsInAmount,
-            fulfilled : false,
-            gameId : _gameId,
-            user : _user,
-            userUid: _userUid,
-            paidInAmount: _paidInAmount,
-            paidAsset: _paidAsset,
-            blockNumber: block.number
+        requestPaid : requestPaid,
+        randomWords : new uint256[](0),
+        tiles : _tiles,
+        tileCostsInAmount : _tileCostsInAmount,
+        fulfilled : false,
+        gameId : _gameId,
+        user : _user,
+        userUid: _userUid,
+        paidInAmount: _paidInAmount,
+        paidAsset: _paidAsset,
+        blockNumber: block.number
         });
         return requestId;
     }
@@ -336,7 +337,8 @@ contract OpenFacet is BaseFacet {
         uint256 length = tiles.length;
         for(uint256 i = 0; i < length; i++) {
             SpotInfo storage spotInfo = spotInfos[gameId][tiles[i]];
-            require(spotInfo.withReferral && !spotInfo.twitterClaimed && spotInfo.isOpened, 'Invalid');
+            require(spotInfo.withReferral && !spotInfo.twitterClaimed && spotInfo.isOpened, 'Invalid Spot');
+            require(spotInfo.user == msg.sender, 'Invalid User');
             uint256 amount = TreasureHuntLib.calculateRatio(spotInfo.tileCostInAmount, 1);
             IERC20(spotInfo.asset).transferFrom(treasury, msg.sender, amount); // gas optimization?
             spotInfo.twitterClaimed = true;
@@ -344,7 +346,7 @@ contract OpenFacet is BaseFacet {
         }
     }
 
-    // Charges apply to all games except the latest game.
+    // 최신 게임을 제외한 나머지 게임에 대해서 청구
     function claimPendingAsset() external {
         require(lastGameId > 0, 'Minimum 1 Game Required');
         uint256[] memory _amounts = new uint256[](assetList.length);
@@ -391,12 +393,13 @@ contract OpenFacet is BaseFacet {
 
     function _verifyReferralSignature(
         address _owner,
+        address _sender,
         string memory _userUid,
         address referralUser,
         uint256 _nonce,
         bytes memory _signature
     ) internal pure {
-        bytes32 messageHash = keccak256(abi.encode(_userUid, referralUser, _nonce));
+        bytes32 messageHash = keccak256(abi.encode(_sender, _userUid, referralUser, _nonce));
         address signer = MessageHashUtils.toEthSignedMessageHash(messageHash).recover(_signature);
         require(signer == _owner, 'Invalid Signature');
     }
