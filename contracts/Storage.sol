@@ -58,14 +58,22 @@ contract Storage {
         uint256 id;
         uint256 totalSpots;
         uint256 maxTilesOpenableAtOnce;
-        uint256 leftSpots;
-        uint256 numTreasure;
+        uint256 numTreasureTile;
+        uint256 numTicketTile;
         uint256 numTicket;
-        uint256 leftNumTreasure;
-        uint256 leftNumTicket;
-        bool isPlaying;
+        uint256 minTicketNum;
+        uint256 maxTicketNum;
         uint256 ticketCostInUsd; // decimal 8
         uint256 startTime;
+    }
+
+    struct GameMetaInfo {
+        uint256 id;
+        uint256 leftSpots;
+        uint256 leftNumTreasureTile;
+        uint256 leftNumTicketTile;
+        uint256 leftNumTicket;
+        bool isPlaying;
         uint256 treasureTile;
         uint256 distributedAllBlockNumber; // A block where both treasures and LDT are distributed.
         uint256[] ticketTiles;
@@ -75,13 +83,13 @@ contract Storage {
         uint256 tile;
         bool isOpened;
         TileType tileType;
+        uint256 ticketNum; // When tile is a ticket, the number of tickets for that tile
         uint256 tileCostInAmount;
         address asset;
         address user;
         string userUid;
         address referralUser;
         bool withReferral;
-        bool twitterClaimed;
     }
 
     struct TimeWindow {
@@ -105,11 +113,17 @@ contract Storage {
     mapping(address => mapping(uint256 => bool)) referralNonce; // user(sender, not referral user) => nonce => bool
     mapping(address => mapping(address => uint256)) public userTreasury; // user => asset => amount
     mapping(uint256 => mapping(address => uint256)) public winnerPrizes; // game => asset => amount
-
     mapping(uint256 => GameInfo) public gameInfos; // game => game info
+    mapping(uint256 => GameMetaInfo) public gameMetaInfos; // game => game meta info
     mapping(uint256 => mapping(uint256 => SpotInfo)) public spotInfos; // game => spot => spot info
     mapping(address => mapping(address => uint256)) public userClaimableAmounts; // user => token => amount
     mapping(uint256 => mapping(address => mapping(address => uint256))) public pendingPots; // Unprocessed pot, game => user => asset => amount
     mapping(address => uint256) public pots; // Processed pot, asset => amount
-    TimeWindow public timeWindow;
+
+    // fee ratio
+    uint256 public treasuryFeeRatio;
+    uint256 public referralFeeRatio;
+    uint256 public refereeFeeRatio;
+
+    uint256 public maxGasPrice; // in wei uints
 }

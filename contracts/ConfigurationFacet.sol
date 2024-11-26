@@ -13,6 +13,8 @@ contract ConfigurationFacet is BaseFacet {
     event SetVrfConfig(uint32 callbackGasLimit, uint16 requestConfirmations);
     event TerminateGame(uint256 gameId);
     event SetGameConfig(uint256 minimumPotSizeInUsd, uint256 minGame, uint256 maxGame);
+    event SetFeeConfig(uint256 treasuryFeeRatio, uint256 referralFeeRatio, uint256 refereeFeeRatio);
+    event SetMaxGasPrice(uint256 maxGasPrice);
     event SetTimeWindow(uint256 dayOfWeek, uint256 startHour, uint256 endHour);
     event TransferUidOwnership(address oldOwner, address newOwner);
     event TransferOwnership(address oldOwner, address newOwner);
@@ -20,8 +22,11 @@ contract ConfigurationFacet is BaseFacet {
     event InitGame(
         uint256 gameId,
         uint256 totalSpots,
-        uint256 numTreasure,
+        uint256 numTreasureTile,
+        uint256 numTicketTile,
         uint256 numTicket,
+        uint256 minTicketNum,
+        uint256 maxTicketNum,
         uint256 ticketCostInUsd,
         uint256 startTime,
         address[] assets,
@@ -30,6 +35,11 @@ contract ConfigurationFacet is BaseFacet {
 
     modifier onlyOwner() {
         require(owner == msg.sender, "Invalid Owner");
+        _;
+    }
+
+    modifier onlyUidOwner() {
+        require(uidOwner == msg.sender, "Invalid UidOwner");
         _;
     }
 
@@ -54,7 +64,7 @@ contract ConfigurationFacet is BaseFacet {
         maxGameTime = _maxGameTime;
         callbackGasLimit = _callbackGasLimit;
         requestConfirmations = _requestConfirmations;
-        for(uint256 index = 0; index < _initialAssets.length; index++) {
+        for (uint256 index = 0; index < _initialAssets.length; index++) {
             assetList.push(_initialAssets[index]);
             assets[_initialAssets[index]] = true;
         }
@@ -64,55 +74,77 @@ contract ConfigurationFacet is BaseFacet {
         i_vrfV2PlusWrapper = vrfV2PlusWrapper;
         USDT = _usdt;
         USDC = _usdc;
-        timeWindow = TimeWindow(7, 0, 24);
+        treasuryFeeRatio = 9;
+        referralFeeRatio = 3;
+        refereeFeeRatio = 3;
+        maxGasPrice = 100000000;
     }
 
     function initGame(
         uint256 totalSpots,
-        uint256 numTreasure,
+        uint256 numTreasureTile,
+        uint256 numTicketTile,
         uint256 numTicket,
+        uint256 minTicketNum,
+        uint256 maxTicketNum,
         uint256 ticketCostInUsd,
         uint256 maxTilesOpenableAtOnce,
         address initialPotAsset
-    ) external onlyOwner {
+    ) external onlyUidOwner {
+        require(tx.gasprice <= maxGasPrice, 'Max Gas Price Exceeded');
         require(assets[initialPotAsset], 'Not Supported Asset');
-        require(totalSpots >= maxTilesOpenableAtOnce, 'Invalid Game Info');
+        require(
+            totalSpots >= maxTilesOpenableAtOnce
+            && numTicketTile > 0
+            && totalSpots >= numTreasureTile + numTicketTile
+            && minTicketNum > 0
+            && minTicketNum <= maxTicketNum
+            && numTicket >= numTicketTile
+            && maxTicketNum <= numTicket
+            , 'Invalid Game Info');
         _checkAndResolveEnoughBalanceInTreasureHunt();
         if (lastGameId != 0) {
-            require(!gameInfos[lastGameId].isPlaying, 'Previous Game in Progress');
+            require(!gameMetaInfos[lastGameId].isPlaying, 'Previous Game in Progress');
         }
         lastGameId = lastGameId + 1;
-        uint256 requiredAmount = getAmountFromUsd(initialPotAsset, minimumPotSizeInUsd);
-        IERC20(initialPotAsset).transferFrom(msg.sender, address(this), requiredAmount);
-        pots[initialPotAsset] = pots[initialPotAsset] + requiredAmount;
+        _checkAndResolveMinimumPotSize(initialPotAsset);
 
         GameInfo storage gameInfo = gameInfos[lastGameId];
         gameInfo.id = lastGameId;
         gameInfo.totalSpots = totalSpots;
         gameInfo.maxTilesOpenableAtOnce = maxTilesOpenableAtOnce;
-        gameInfo.leftSpots = totalSpots;
-        gameInfo.numTreasure = numTreasure;
+        gameInfo.numTreasureTile = numTreasureTile;
+        gameInfo.numTicketTile = numTicketTile;
         gameInfo.numTicket = numTicket;
-        gameInfo.leftNumTreasure = numTreasure;
-        gameInfo.leftNumTicket = numTicket;
-        gameInfo.isPlaying = true;
+        gameInfo.minTicketNum = minTicketNum;
+        gameInfo.maxTicketNum = maxTicketNum;
         gameInfo.ticketCostInUsd = ticketCostInUsd;
         gameInfo.startTime = block.timestamp;
-        gameInfo.treasureTile = type(uint256).max;
         gameInfos[lastGameId] = gameInfo;
 
+        GameMetaInfo storage gameMetaInfo = gameMetaInfos[lastGameId];
+        gameMetaInfo.id = lastGameId;
+        gameMetaInfo.leftSpots = totalSpots;
+        gameMetaInfo.leftNumTreasureTile = numTreasureTile;
+        gameMetaInfo.leftNumTicketTile = numTicketTile;
+        gameMetaInfo.leftNumTicket = numTicket;
+        gameMetaInfo.isPlaying = true;
+        gameMetaInfo.treasureTile = type(uint256).max;
+        gameMetaInfos[lastGameId] = gameMetaInfo;
+
         (address[] memory _assets, uint256[] memory _amounts) = _getPotInfo();
-        emit InitGame(lastGameId, totalSpots, numTreasure, numTicket, ticketCostInUsd, block.timestamp, _assets, _amounts);
+        emit InitGame(lastGameId, totalSpots, numTreasureTile, numTicketTile, numTicket, minTicketNum, maxTicketNum, ticketCostInUsd, block.timestamp, _assets, _amounts);
     }
 
-    function terminateGame(uint256 gameId) external onlyOwner {
-        GameInfo storage gameInfo = gameInfos[gameId];
+    function terminateGame(uint256 gameId) external onlyUidOwner {
+        GameMetaInfo storage gameMetaInfo = gameMetaInfos[gameId];
+        GameInfo memory gameInfo = gameInfos[gameId];
         if (
-            (!gameInfo.isPlaying && block.timestamp > gameInfo.startTime + minGameTime) // The game can be terminated after the minimum appearance cycle, even if it has already ended.
-            || (gameInfo.isPlaying && block.timestamp > gameInfo.startTime + maxGameTime)) // The game can be terminated if the progress time is exceeded, even if it has not ended.
+            (!gameMetaInfo.isPlaying && block.timestamp > gameInfo.startTime + minGameTime) // The game can be terminated after the minimum appearance cycle, even if it has already ended.
+            || (gameMetaInfo.isPlaying && block.timestamp > gameInfo.startTime + maxGameTime)) // The game can be terminated if the progress time is exceeded, even if it has not ended.
         {
-            gameInfo.isPlaying = false;
-            gameInfos[gameId] = gameInfo;
+            gameMetaInfo.isPlaying = false;
+            gameMetaInfos[gameId] = gameMetaInfo;
             emit TerminateGame(gameId);
             return;
         }
@@ -153,22 +185,39 @@ contract ConfigurationFacet is BaseFacet {
         emit SetGameConfig(_minimumPotSizeInUsd, _minGameTime, _maxGameTime);
     }
 
-    function setTimeWindow(uint8 dayOfWeek, uint8 startHour, uint8 endHour) external onlyOwner {
-        require(dayOfWeek >= 1 && dayOfWeek <= 7, "Invalid Day of Week");
-        require(startHour < 24, "Invalid Start Hour");
-        require(endHour <= 24, "Invalid End Hour");
-        require(startHour < endHour, "StartHour >= EndHour");
-        timeWindow = TimeWindow(dayOfWeek, startHour, endHour);
-        emit SetTimeWindow(dayOfWeek, startHour, endHour);
+    function setFeeConfig(
+        uint256 _treasuryFeeRatio,
+        uint256 _referralFeeRatio,
+        uint256 _refereeFeeRatio
+    ) external onlyOwner {
+        require(_treasuryFeeRatio + _referralFeeRatio + _refereeFeeRatio <= 100, "Invalid Fee Ratio");
+        treasuryFeeRatio = _treasuryFeeRatio;
+        referralFeeRatio = _referralFeeRatio;
+        refereeFeeRatio = _refereeFeeRatio;
+        emit SetFeeConfig(_treasuryFeeRatio, _referralFeeRatio, _refereeFeeRatio);
+    }
+
+    function setMaxGasPrice(uint256 _maxGasPrice) external onlyOwner {
+        maxGasPrice = _maxGasPrice;
+        emit SetMaxGasPrice(_maxGasPrice);
     }
 
     function _checkAndResolveEnoughBalanceInTreasureHunt() internal {
-        for(uint256 index = 0; index < assetList.length; index++) {
+        for (uint256 index = 0; index < assetList.length; index++) {
             uint256 potAmount = pots[assetList[index]];
             uint256 treasureHuntBalance = IERC20(assetList[index]).balanceOf(address(this));
             if (potAmount > treasureHuntBalance) {
                 IERC20(assetList[index]).transferFrom(msg.sender, address(this), potAmount - treasureHuntBalance);
             }
+        }
+    }
+
+    function _checkAndResolveMinimumPotSize(address asset) internal {
+        uint256 leftPotSizeInUsd = getLeftPotSizeInUsd();
+        if (leftPotSizeInUsd < minimumPotSizeInUsd) {
+            uint256 requiredAmount = getAmountFromUsd(asset, minimumPotSizeInUsd - leftPotSizeInUsd);
+            IERC20(asset).transferFrom(msg.sender, address(this), requiredAmount);
+            pots[asset] = pots[asset] + requiredAmount;
         }
     }
 }

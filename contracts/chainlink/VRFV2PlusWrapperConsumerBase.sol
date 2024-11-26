@@ -3,7 +3,7 @@ pragma solidity ^0.8.0;
 
 import {LinkTokenInterface} from "./LinkTokenInterface.sol";
 import {IVRFV2PlusWrapper} from "./IVRFV2PlusWrapper.sol";
-import "../Storage.sol";
+import "../BaseFacet.sol";
 
 /**
  *
@@ -29,7 +29,7 @@ import "../Storage.sol";
  * @dev Consumers must implement the fullfillRandomWords function, which will be called during
  * @dev fulfillment with the randomness result.
  */
-abstract contract VRFV2PlusWrapperConsumerBase is Storage {
+abstract contract VRFV2PlusWrapperConsumerBase is BaseFacet {
     error OnlyVRFWrapperCanFulfill(address have, address want);
 
     /**

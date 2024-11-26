@@ -8,7 +8,6 @@ import "./interfaces/IERC20.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import "./lib/TreasureHuntLib.sol";
-import "./lib/BokkyPooBahsDateTimeLibrary.sol";
 import "./BaseFacet.sol";
 
 contract OpenFacet is BaseFacet {
@@ -16,6 +15,7 @@ contract OpenFacet is BaseFacet {
 
     event OpenSpot(
         address user,
+        address payer,
         uint256 gameId,
         uint256[] tiles,
         uint256 openCostInAmount,
@@ -26,7 +26,6 @@ contract OpenFacet is BaseFacet {
     event Claim(address user, address[] assets, uint256[] amounts);
     event ClaimPendingAsset(address user, address[] assets, uint256[] amounts);
     event ClaimPrivateTreasury(address user, address[] assets, uint256[] amounts);
-    event ClaimTwitter(address user, uint256 gameId, uint256 tile, address asset, uint256 amount);
 
     struct LocalOpenSpotStruct {
         uint256 unopenedTileCount;
@@ -46,18 +45,19 @@ contract OpenFacet is BaseFacet {
         uint256[] memory tiles,
         address asset,
         uint256 maxAvgAmount,
+        address user,
         string memory userUid,
         address referralUser,
         uint256 nonce,
         bytes memory signature
     ) external {
         require(referralUser != address(0), 'Invalid Referral User');
-        address user = msg.sender;
+        address payer = msg.sender;
         require(user != referralUser, 'Not Allowed to Refer Yourself');
         require(!referralNonce[user][nonce], 'Already Used Nonce');
         _verifyReferralSignature(uidOwner, user, userUid, referralUser, nonce, signature);
         referralNonce[user][nonce] = true;
-        _openSpot(user, userUid, gameId, tiles, asset, maxAvgAmount, referralUser);
+        _openSpot(user, userUid, payer, gameId, tiles, asset, maxAvgAmount, referralUser);
     }
 
     function openSpotWithUID(
@@ -65,41 +65,46 @@ contract OpenFacet is BaseFacet {
         uint256[] memory tiles,
         address asset,
         uint256 maxAvgAmount,
+        address user,
         string memory userUid,
         uint256 nonce,
         bytes memory signature
     ) external {
-        address user = msg.sender;
+        address payer = msg.sender;
         require(!uidNonce[userUid][nonce], 'Already Used Nonce');
-        _verifyUidSignature(uidOwner, userUid, nonce, signature);
+        _verifyUidSignature(uidOwner, user, userUid, nonce, signature);
         uidNonce[userUid][nonce] = true;
-        _openSpot(user, userUid, gameId, tiles, asset, maxAvgAmount, address(0));
+        _openSpot(user, userUid, payer, gameId, tiles, asset, maxAvgAmount, address(0));
     }
 
     function openSpot(
         uint256 gameId,
         uint256[] memory tiles,
+        address user,
         address asset,
         uint256 maxAvgAmount
     ) external {
-        address user = msg.sender;
-        _openSpot(user, "", gameId, tiles, asset, maxAvgAmount, address(0));
+        address payer = msg.sender;
+        _openSpot(user, "", payer, gameId, tiles, asset, maxAvgAmount, address(0));
     }
 
     function _openSpot(
         address user,
         string memory userUid,
+        address payer,
         uint256 gameId,
         uint256[] memory tiles,
         address asset,
         uint256 maxAvgAmount,
         address referralUser
     ) internal {
-        GameInfo storage gameInfo = gameInfos[gameId];
+        require(tx.gasprice <= maxGasPrice, 'Max Gas Price Exceeded');
+        GameInfo memory gameInfo = gameInfos[gameId];
+        GameMetaInfo memory gameMetaInfo = gameMetaInfos[gameId];
         require(tiles.length >= 1 && tiles.length <= gameInfo.maxTilesOpenableAtOnce, 'Invalid Tile Size');
-        require(gameInfo.isPlaying, 'Game Not in Progress');
+        require(gameMetaInfo.isPlaying, 'Game Not in Progress');
         require(block.timestamp <= gameInfo.startTime + maxGameTime, 'Already Ended Game');
-        require(gameInfo.leftNumTicket != 0 || gameInfo.leftNumTreasure != 0, 'No Ticket And Treasure');
+        require(gameMetaInfo.leftNumTicketTile != 0 || gameMetaInfo.leftNumTreasureTile != 0, 'No Ticket And Treasure');
         require(assets[asset], 'Not Supported Asset');
 
         LocalOpenSpotStruct memory localStruct;
@@ -151,7 +156,7 @@ contract OpenFacet is BaseFacet {
         }
 
         pendingPots[gameId][user][asset] = pendingPots[gameId][user][asset] + localStruct.actualPaidInAmount;
-        IERC20(asset).transferFrom(user, address(this), localStruct.actualPaidInAmount);
+        IERC20(asset).transferFrom(payer, address(this), localStruct.actualPaidInAmount);
         uint256 requestId = _makeVrfNative(
             user,
             userUid,
@@ -161,7 +166,7 @@ contract OpenFacet is BaseFacet {
             localStruct.actualPaidInAmount,
             asset
         );
-        emit OpenSpot(user, gameId, localStruct.actualTiles, localStruct.actualPaidInAmount, asset, requestId);
+        emit OpenSpot(user, payer, gameId, localStruct.actualTiles, localStruct.actualPaidInAmount, asset, requestId);
     }
 
     function getTiles(uint256 gameId) public view returns (SpotInfo[] memory, address[] memory, uint256[] memory) {
@@ -207,17 +212,17 @@ contract OpenFacet is BaseFacet {
         require(address(this).balance >= i_vrfV2PlusWrapper.calculateRequestPriceNative(callbackGasLimit, uint32(_tiles.length)), 'Insufficient Balance for VRF Request');
         (requestId, requestPaid) = requestRandomnessPayInNative(callbackGasLimit, requestConfirmations, uint32(_tiles.length), extraArgs);
         requests[requestId] = RequestStatus({
-        requestPaid : requestPaid,
-        randomWords : new uint256[](0),
-        tiles : _tiles,
-        tileCostsInAmount : _tileCostsInAmount,
-        fulfilled : false,
-        gameId : _gameId,
-        user : _user,
-        userUid: _userUid,
-        paidInAmount: _paidInAmount,
-        paidAsset: _paidAsset,
-        blockNumber: block.number
+            requestPaid : requestPaid,
+            randomWords : new uint256[](0),
+            tiles : _tiles,
+            tileCostsInAmount : _tileCostsInAmount,
+            fulfilled : false,
+            gameId : _gameId,
+            user : _user,
+            userUid: _userUid,
+            paidInAmount: _paidInAmount,
+            paidAsset: _paidAsset,
+            blockNumber: block.number
         });
         return requestId;
     }
@@ -231,7 +236,7 @@ contract OpenFacet is BaseFacet {
         return (assetList, amounts);
     }
 
-    function getGameOverview(uint256 _gameId) external view returns (
+    function getGameOverview() external view returns (
         uint256 gameId,
         uint256 startTime,
         SpotInfo[] memory tiles,
@@ -239,16 +244,30 @@ contract OpenFacet is BaseFacet {
         uint256[] memory potAmounts,
         address[] memory winnerAssets,
         uint256[] memory winnerAmounts,
+        uint256 leftNumTicketTile,
         uint256 leftNumTicket,
-        bool isPlaying
+        bool isPlaying,
+        uint256 _minGameTime,
+        uint256 _maxGameTime,
+        address winner
     ) {
-        GameInfo memory gameInfo = gameInfos[_gameId];
-        (tiles, potAssets, potAmounts) = getTiles(_gameId);
-        (winnerAssets, winnerAmounts) = getWinnerPrize(_gameId);
-        gameId = _gameId;
+        GameInfo memory gameInfo = gameInfos[lastGameId];
+        GameMetaInfo memory gameMetaInfo = gameMetaInfos[lastGameId];
+        (tiles, potAssets, potAmounts) = getTiles(lastGameId);
+        (winnerAssets, winnerAmounts) = getWinnerPrize(lastGameId);
+        gameId = lastGameId;
         startTime = gameInfo.startTime;
-        leftNumTicket = gameInfo.leftNumTicket;
-        isPlaying = gameInfo.isPlaying;
+        leftNumTicketTile = gameMetaInfo.leftNumTicketTile;
+        leftNumTicket = gameMetaInfo.leftNumTicket;
+        isPlaying = gameMetaInfo.isPlaying;
+        _minGameTime = minGameTime;
+        _maxGameTime = maxGameTime;
+        winner = getWinner(lastGameId);
+    }
+
+    function getWinner(uint256 gameId) public view returns (address) {
+        GameMetaInfo memory gameMetaInfo = gameMetaInfos[gameId];
+        return spotInfos[gameId][gameMetaInfo.treasureTile].user;
     }
 
     function calculateTileCostsInAmount(address asset, uint256 gameId, uint256 tileCount) public view returns (uint256[] memory) {
@@ -262,23 +281,21 @@ contract OpenFacet is BaseFacet {
 
     function calculateTileCostsInUsd(uint256 gameId, uint256 tileCount) public view returns (uint256[] memory) {
         GameInfo memory gameInfo = gameInfos[gameId];
-        require(gameInfo.leftSpots >= tileCount, 'Invalid Tile Count');
+        GameMetaInfo memory gameMetaInfo = gameMetaInfos[gameId];
+        require(gameMetaInfo.leftSpots >= tileCount, 'Invalid Tile Count');
         uint256[] memory tileCostsInUsd = new uint256[](tileCount);
         for (uint256 index = 0; index < tileCount; index++) {
-            uint256 leftSpots = gameInfo.leftSpots - index;
-            tileCostsInUsd[index] = calculateTileCostInUsd(gameInfo.ticketCostInUsd, leftSpots, gameInfo.leftNumTreasure, gameInfo.numTicket, gameInfo.leftNumTicket);
+            uint256 leftSpots = gameMetaInfo.leftSpots - index;
+            tileCostsInUsd[index] = calculateTileCostInUsd(gameInfo.ticketCostInUsd, leftSpots, gameMetaInfo.leftNumTreasureTile, gameMetaInfo.leftNumTicket);
         }
         return tileCostsInUsd;
     }
 
-    function calculateTileCostInUsd(uint256 ticketCostInUsd, uint256 leftSpots, uint256 leftNumTreasure, uint256 numTicket, uint256 leftNumTicket) public view returns (uint256) {
+    function calculateTileCostInUsd(uint256 ticketCostInUsd, uint256 leftSpots, uint256 leftNumTreasureTile, uint256 leftNumTicket) public view returns (uint256) {
         if (leftSpots == 0) {
             return 0;
         }
-        if (numTicket == 0) {
-            return (getLeftPotSizeInUsd() / leftSpots);
-        }
-        if (leftNumTreasure == 0) {
+        if (leftNumTreasureTile == 0) {
             return ((ticketCostInUsd * leftNumTicket) / leftSpots);
         } else {
             return ((ticketCostInUsd * leftNumTicket + getLeftPotSizeInUsd()) / leftSpots);
@@ -305,48 +322,30 @@ contract OpenFacet is BaseFacet {
     }
 
     function claimPrivateTreasury() external {
-        require(_inTimeWindow(), 'Invalid Time Window');
+        _claimPrivateTreasury(msg.sender);
+    }
+
+    function claimPrivateTreasury(address[] memory users) external {
+        for(uint256 index = 0; index < users.length; index++) {
+            _claimPrivateTreasury(users[index]);
+        }
+    }
+
+    function _claimPrivateTreasury(address user) internal {
         uint256[] memory _amounts = new uint256[](assetList.length);
         for(uint256 assetIndex = 0; assetIndex < assetList.length; assetIndex++) {
             address asset = assetList[assetIndex];
-            uint256 amount = userTreasury[msg.sender][asset];
-            userTreasury[msg.sender][asset] = 0;
+            uint256 amount = userTreasury[user][asset];
+            userTreasury[user][asset] = 0;
             if (amount > 0) {
-                IERC20(asset).transferFrom(treasury, msg.sender, amount);
+                IERC20(asset).transferFrom(treasury, user, amount);
             }
             _amounts[assetIndex] = amount;
         }
-        emit ClaimPrivateTreasury(msg.sender, assetList, _amounts);
+        emit ClaimPrivateTreasury(user, assetList, _amounts);
     }
 
-    function _inTimeWindow() internal view returns (bool) {
-        uint256 currentTime = block.timestamp;
-
-        uint currentDayOfWeek = BokkyPooBahsDateTimeLibrary.getDayOfWeek(currentTime);
-        uint currentHour = BokkyPooBahsDateTimeLibrary.getHour(currentTime);
-
-        if (currentDayOfWeek == timeWindow.dayOfWeek) {
-            if (currentHour >= timeWindow.startHour && currentHour < timeWindow.endHour) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    function claimTwitter(uint256 gameId, uint256[] memory tiles) external {
-        uint256 length = tiles.length;
-        for(uint256 i = 0; i < length; i++) {
-            SpotInfo storage spotInfo = spotInfos[gameId][tiles[i]];
-            require(spotInfo.withReferral && !spotInfo.twitterClaimed && spotInfo.isOpened, 'Invalid Spot');
-            require(spotInfo.user == msg.sender, 'Invalid User');
-            uint256 amount = TreasureHuntLib.calculateRatio(spotInfo.tileCostInAmount, 1);
-            IERC20(spotInfo.asset).transferFrom(treasury, msg.sender, amount); // gas optimization?
-            spotInfo.twitterClaimed = true;
-            emit ClaimTwitter(msg.sender, gameId, tiles[i], spotInfo.asset, amount);
-        }
-    }
-
-    // 최신 게임을 제외한 나머지 게임에 대해서 청구
+    // claim for all games except the latest games
     function claimPendingAsset() external {
         require(lastGameId > 0, 'Minimum 1 Game Required');
         uint256[] memory _amounts = new uint256[](assetList.length);
@@ -373,6 +372,10 @@ contract OpenFacet is BaseFacet {
         return gameInfos[_gameId];
     }
 
+    function getGameMetaInfo(uint256 _gameId) external view returns (GameMetaInfo memory) {
+        return gameMetaInfos[_gameId];
+    }
+
     function getRequestStatus(
         uint256 _requestId
     ) external view returns (RequestStatus memory) {
@@ -382,24 +385,25 @@ contract OpenFacet is BaseFacet {
 
     function _verifyUidSignature(
         address _owner,
+        address _user,
         string memory _userUid,
         uint256 _nonce,
         bytes memory _signature
     ) internal pure {
-        bytes32 messageHash = keccak256(abi.encode(_userUid, _nonce));
+        bytes32 messageHash = keccak256(abi.encode(_user, _userUid, _nonce));
         address signer = MessageHashUtils.toEthSignedMessageHash(messageHash).recover(_signature);
         require(signer == _owner, 'Invalid Signature');
     }
 
     function _verifyReferralSignature(
         address _owner,
-        address _sender,
+        address _user,
         string memory _userUid,
         address referralUser,
         uint256 _nonce,
         bytes memory _signature
     ) internal pure {
-        bytes32 messageHash = keccak256(abi.encode(_sender, _userUid, referralUser, _nonce));
+        bytes32 messageHash = keccak256(abi.encode(_user, _userUid, referralUser, _nonce));
         address signer = MessageHashUtils.toEthSignedMessageHash(messageHash).recover(_signature);
         require(signer == _owner, 'Invalid Signature');
     }
