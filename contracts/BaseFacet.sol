@@ -2,12 +2,12 @@
 pragma solidity ^0.8.0;
 
 import "./Storage.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "./interfaces/IERC20.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 
-contract BaseFacet is Storage {
+contract BaseFacet is Storage, Initializable {
     function getLeftPotSizeInUsd() public view returns (uint256 potSize) {
         for(uint256 index = 0; index < assetList.length; index++) {
             potSize = potSize + _getAssetInUsd(assetList[index], pots[assetList[index]]);
@@ -19,7 +19,7 @@ contract BaseFacet is Storage {
     }
 
     function _getAssetInUsd(address asset, uint256 amount) internal view returns (uint256) {
-        uint256 decimals = IERC20(asset).decimals();
+        uint256 decimals = _getDecimals(asset);
         uint256 priceInUsd = _getAssetPriceInUsd(asset);
         return amount * priceInUsd / (10 ** decimals);
     }
@@ -29,7 +29,18 @@ contract BaseFacet is Storage {
         if (asset == USDT || asset == USDC) {
             return 10 ** 8;
         }
+        if (asset == ETH) {
+            (, int256 price,,,) = ethOracle.latestRoundData();
+            return uint256(price);
+        }
         return 0;
+    }
+
+    function _getDecimals(address asset) internal view returns (uint256) {
+        if (asset == ETH) {
+            return 18;
+        }
+        return IERC20(asset).decimals();
     }
 
     function _getPotInfo() internal view returns (address[] memory, uint256[] memory) {

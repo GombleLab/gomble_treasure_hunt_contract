@@ -39,8 +39,8 @@ contract ProcessFacet is VRFV2PlusWrapperConsumerBase {
         uint256 gameId = requestStatus.gameId;
         GameInfo memory gameInfo = gameInfos[gameId];
         GameMetaInfo storage gameMetaInfo = gameMetaInfos[gameId];
-        LocalProcessStruct memory localStruct;
         for (uint256 index = 0; index < requestStatus.randomWords.length; index++) {
+            LocalProcessStruct memory localStruct;
             uint256 tile = requestStatus.tiles[index];
             localStruct.tileCostInAmount = requestStatus.tileCostsInAmount[index];
             // If the request is sent before all treasures and tickets are found, it will be transferred to the treasury.
@@ -53,22 +53,26 @@ contract ProcessFacet is VRFV2PlusWrapperConsumerBase {
                     _setSpotResult(gameId, tile, TileType.NONE, localStruct.tileCostInAmount, requestStatus.paidAsset, requestStatus.user, requestStatus.userUid);
                 }
 
-                pendingPots[gameId][requestStatus.user][requestStatus.paidAsset] = pendingPots[gameId][requestStatus.user][requestStatus.paidAsset] - localStruct.tileCostInAmount;
+                if (spotInfos[gameId][tile].withReferral) {
+                    (localStruct.refereeFeeAmount, localStruct.referralFeeAmount) = _processReferralFee(spotInfos[gameId][tile].referralUser, requestStatus.user, requestStatus.paidAsset, localStruct.tileCostInAmount);
+                }   
+                
+                pendingPots[gameId][requestStatus.user][requestStatus.paidAsset] = pendingPots[gameId][requestStatus.user][requestStatus.paidAsset] - localStruct.tileCostInAmount ;
+                globalPendingPots[requestStatus.paidAsset] = globalPendingPots[requestStatus.paidAsset] - localStruct.tileCostInAmount;
                 IERC20(requestStatus.paidAsset).transfer(treasury, localStruct.tileCostInAmount);
                 continue;
             }
 
             // The actual point at which the fee is charged.
-            localStruct.treasuryFeeAmount = TreasureHuntLib.calculateRatio(localStruct.tileCostInAmount, treasuryFeeRatio);
-            localStruct.refereeFeeAmount = TreasureHuntLib.calculateRatio(localStruct.tileCostInAmount, refereeFeeRatio);
-            localStruct.referralFeeAmount = TreasureHuntLib.calculateRatio(localStruct.tileCostInAmount, referralFeeRatio);
-            localStruct.tileNetCostInAmount = localStruct.tileCostInAmount - (localStruct.treasuryFeeAmount + localStruct.refereeFeeAmount + localStruct.referralFeeAmount);
             if (spotInfos[gameId][tile].withReferral) {
-                userTreasury[requestStatus.user][requestStatus.paidAsset] = userTreasury[requestStatus.user][requestStatus.paidAsset] + localStruct.refereeFeeAmount;
-                userTreasury[spotInfos[gameId][tile].referralUser][requestStatus.paidAsset] = userTreasury[spotInfos[gameId][tile].referralUser][requestStatus.paidAsset] + localStruct.referralFeeAmount;
+                (localStruct.refereeFeeAmount, localStruct.referralFeeAmount) = _processReferralFee(spotInfos[gameId][tile].referralUser, requestStatus.user, requestStatus.paidAsset, localStruct.tileCostInAmount);
             }
 
+            localStruct.treasuryFeeAmount = TreasureHuntLib.calculateRatio(localStruct.tileCostInAmount, treasuryFeeRatio);
+            localStruct.tileNetCostInAmount = localStruct.tileCostInAmount - (localStruct.treasuryFeeAmount - localStruct.referralFeeAmount - localStruct.refereeFeeAmount);
+
             pendingPots[gameId][requestStatus.user][requestStatus.paidAsset] = pendingPots[gameId][requestStatus.user][requestStatus.paidAsset] - localStruct.tileCostInAmount;
+            globalPendingPots[requestStatus.paidAsset] = globalPendingPots[requestStatus.paidAsset] - localStruct.tileCostInAmount;
             IERC20(requestStatus.paidAsset).transfer(treasury, localStruct.tileCostInAmount - localStruct.tileNetCostInAmount);
             pots[requestStatus.paidAsset] = pots[requestStatus.paidAsset] + localStruct.tileNetCostInAmount;
 
@@ -161,12 +165,35 @@ contract ProcessFacet is VRFV2PlusWrapperConsumerBase {
                 _prizes[index] = pots[asset];
                 winnerPrizes[gameMetaInfo.id][asset] = pots[asset];
                 userClaimableAmounts[winner][asset] = userClaimableAmounts[winner][asset] + pots[asset];
+                globalUserClaimableAmounts[asset] = globalUserClaimableAmounts[asset] + pots[asset];
                 pots[asset] = 0;
             }
             emit TreasureFound(gameMetaInfo.id, gameMetaInfo.treasureTile, winner, assetList, _prizes, userUid);
             return;
         }
         emit TreasureFound(gameMetaInfo.id, gameMetaInfo.treasureTile, address(0), assetList, new uint256[](assetList.length), userUid);
+    }
+
+    function _processReferralFee(address referralUser, address refereeUser, address paidAsset, uint256 tileCostInAmount) internal returns (uint256, uint256) {
+        (uint256 refereeFeeAmount, uint256 referralFeeAmount) = _calculateReferralFee(referralUser, tileCostInAmount);
+        userTreasury[refereeUser][paidAsset] = userTreasury[refereeUser][paidAsset] + refereeFeeAmount;
+        userTreasury[referralUser][paidAsset] = userTreasury[referralUser][paidAsset] + referralFeeAmount;
+        globalUserTreasury[paidAsset] = globalUserTreasury[paidAsset] + refereeFeeAmount + referralFeeAmount;
+        return (refereeFeeAmount, referralFeeAmount);
+    }
+
+    function _calculateReferralFee(address referralUser, uint256 tileCostInAmount) internal view returns (uint256, uint256) {
+        if (predefinedReferralUsers[referralUser]) {
+            return (
+                TreasureHuntLib.calculateRatio(tileCostInAmount, predefinedRefereeFeeRatio), 
+                TreasureHuntLib.calculateRatio(tileCostInAmount, predefinedReferralFeeRatio)
+            );
+        } else {
+            return (
+                TreasureHuntLib.calculateRatio(tileCostInAmount, refereeFeeRatio),
+                TreasureHuntLib.calculateRatio(tileCostInAmount, referralFeeRatio)
+            );
+        }
     }
 
     function _checkResult(uint256 randomNumber, uint256 leftSpots, uint256 leftNumTreasureTile, uint256 leftNumTicketTile) internal pure returns (TileType) {

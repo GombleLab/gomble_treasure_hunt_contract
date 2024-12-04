@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-import "./chainlink/VRFV2PlusWrapperConsumerBase.sol";
 import "./chainlink/VRFV2PlusClient.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "./interfaces/IERC20.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
@@ -13,9 +11,8 @@ contract ConfigurationFacet is BaseFacet {
     event SetVrfConfig(uint32 callbackGasLimit, uint16 requestConfirmations);
     event TerminateGame(uint256 gameId);
     event SetGameConfig(uint256 minimumPotSizeInUsd, uint256 minGame, uint256 maxGame);
-    event SetFeeConfig(uint256 treasuryFeeRatio, uint256 referralFeeRatio, uint256 refereeFeeRatio);
+    event SetFeeConfig(uint256 treasuryFeeRatio, uint256 referralFeeRatio, uint256 refereeFeeRatio, uint256 predefinedReferralFeeRatio, uint256 predefinedRefereeFeeRatio);
     event SetMaxGasPrice(uint256 maxGasPrice);
-    event SetTimeWindow(uint256 dayOfWeek, uint256 startHour, uint256 endHour);
     event TransferUidOwnership(address oldOwner, address newOwner);
     event TransferOwnership(address oldOwner, address newOwner);
 
@@ -49,34 +46,37 @@ contract ConfigurationFacet is BaseFacet {
         address _treasury,
         uint256 _minGameTime,
         uint256 _maxGameTime,
-        uint32 _callbackGasLimit,
-        uint16 _requestConfirmations,
         address[] memory _initialAssets,
         address _uidOwner,
         address _vrfV2Wrapper,
         address _usdt,
-        address _usdc
-    ) external onlyOwner {
+        address _usdc,
+        address _ethOracle
+    ) external initializer {
         owner = _initialOwner;
         minimumPotSizeInUsd = _minimumPotSizeInUsd;
         treasury = _treasury;
         minGameTime = _minGameTime;
         maxGameTime = _maxGameTime;
-        callbackGasLimit = _callbackGasLimit;
-        requestConfirmations = _requestConfirmations;
         for (uint256 index = 0; index < _initialAssets.length; index++) {
             assetList.push(_initialAssets[index]);
             assets[_initialAssets[index]] = true;
         }
+        assets[ETH] = true;
         uidOwner = _uidOwner;
         IVRFV2PlusWrapper vrfV2PlusWrapper = IVRFV2PlusWrapper(_vrfV2Wrapper);
         i_linkToken = LinkTokenInterface(vrfV2PlusWrapper.link());
         i_vrfV2PlusWrapper = vrfV2PlusWrapper;
         USDT = _usdt;
         USDC = _usdc;
-        treasuryFeeRatio = 9;
-        referralFeeRatio = 3;
-        refereeFeeRatio = 3;
+        ethOracle = AggregatorV3Interface(_ethOracle);
+        callbackGasLimit = 1500000;
+        requestConfirmations = 1;
+        treasuryFeeRatio = 15;
+        referralFeeRatio = 1;
+        refereeFeeRatio = 1;
+        predefinedReferralFeeRatio = 2;
+        predefinedRefereeFeeRatio = 2;
         maxGasPrice = 100000000;
     }
 
@@ -185,16 +185,28 @@ contract ConfigurationFacet is BaseFacet {
         emit SetGameConfig(_minimumPotSizeInUsd, _minGameTime, _maxGameTime);
     }
 
+    function setPredefinedReferralUser(address[] memory users, bool isPredefined) external onlyOwner {
+        for (uint256 index = 0; index < users.length; index++) {
+            require(users[index] != address(0), 'Invalid User');
+            predefinedReferralUsers[users[index]] = isPredefined;
+        }
+    }
+
     function setFeeConfig(
         uint256 _treasuryFeeRatio,
         uint256 _referralFeeRatio,
-        uint256 _refereeFeeRatio
+        uint256 _refereeFeeRatio,
+        uint256 _predefinedReferralFeeRatio,
+        uint256 _predefinedRefereeFeeRatio
     ) external onlyOwner {
         require(_treasuryFeeRatio + _referralFeeRatio + _refereeFeeRatio <= 100, "Invalid Fee Ratio");
+        require(_treasuryFeeRatio + _predefinedReferralFeeRatio + _predefinedRefereeFeeRatio <= 100, "Invalid Predefined Fee Ratio");
         treasuryFeeRatio = _treasuryFeeRatio;
         referralFeeRatio = _referralFeeRatio;
         refereeFeeRatio = _refereeFeeRatio;
-        emit SetFeeConfig(_treasuryFeeRatio, _referralFeeRatio, _refereeFeeRatio);
+        predefinedReferralFeeRatio = _predefinedReferralFeeRatio;
+        predefinedRefereeFeeRatio = _predefinedRefereeFeeRatio;
+        emit SetFeeConfig(_treasuryFeeRatio, _referralFeeRatio, _refereeFeeRatio, _predefinedReferralFeeRatio, _predefinedRefereeFeeRatio);
     }
 
     function setMaxGasPrice(uint256 _maxGasPrice) external onlyOwner {
@@ -204,10 +216,10 @@ contract ConfigurationFacet is BaseFacet {
 
     function _checkAndResolveEnoughBalanceInTreasureHunt() internal {
         for (uint256 index = 0; index < assetList.length; index++) {
-            uint256 potAmount = pots[assetList[index]];
+            uint256 amountToMaintain = _getAmountToMaintain(assetList[index]);
             uint256 treasureHuntBalance = IERC20(assetList[index]).balanceOf(address(this));
-            if (potAmount > treasureHuntBalance) {
-                IERC20(assetList[index]).transferFrom(msg.sender, address(this), potAmount - treasureHuntBalance);
+            if (amountToMaintain > treasureHuntBalance) {
+                IERC20(assetList[index]).transferFrom(msg.sender, address(this), amountToMaintain - treasureHuntBalance);
             }
         }
     }
@@ -219,5 +231,9 @@ contract ConfigurationFacet is BaseFacet {
             IERC20(asset).transferFrom(msg.sender, address(this), requiredAmount);
             pots[asset] = pots[asset] + requiredAmount;
         }
+    }
+
+    function _getAmountToMaintain(address asset) internal view returns (uint256) {
+        return pots[asset] + globalPendingPots[asset] + globalUserTreasury[asset] + globalUserClaimableAmounts[asset];
     }
 }

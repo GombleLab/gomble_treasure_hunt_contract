@@ -3,7 +3,7 @@ pragma solidity ^0.8.0;
 
 import "./chainlink/LinkTokenInterface.sol";
 import "./chainlink/IVRFV2PlusWrapper.sol";
-
+import "./chainlink/AggregatorV3Interface.sol";
 contract Storage {
     // facet
     struct FacetAddressAndPosition {
@@ -25,6 +25,9 @@ contract Storage {
     // vrf
     LinkTokenInterface internal i_linkToken;
     IVRFV2PlusWrapper public i_vrfV2PlusWrapper;
+
+    // oracle
+    AggregatorV3Interface public ethOracle;
 
     struct RequestStatus {
         uint256 requestPaid;
@@ -92,16 +95,11 @@ contract Storage {
         bool withReferral;
     }
 
-    struct TimeWindow {
-        uint256 dayOfWeek; // 1: Monday, 7: Sunday
-        uint256 startHour; // 0 ~ 23
-        uint256 endHour; // 0 ~ 23
-    }
-
     uint256 public lastGameId;
     uint256 public minimumPotSizeInUsd; // decimal 8
     address public USDT;
     address public USDC;
+    address constant public ETH = 0x0000000000000000000000000000000000000001;
     address public treasury;
     uint256 public minGameTime; // Minimum appearance cycle of the board.
     uint256 public maxGameTime; // Progress time
@@ -111,19 +109,25 @@ contract Storage {
     address public uidOwner;
     mapping(string => mapping(uint256 => bool)) uidNonce; // user uid => nonce => bool
     mapping(address => mapping(uint256 => bool)) referralNonce; // user(sender, not referral user) => nonce => bool
-    mapping(address => mapping(address => uint256)) public userTreasury; // user => asset => amount
     mapping(uint256 => mapping(address => uint256)) public winnerPrizes; // game => asset => amount
     mapping(uint256 => GameInfo) public gameInfos; // game => game info
     mapping(uint256 => GameMetaInfo) public gameMetaInfos; // game => game meta info
     mapping(uint256 => mapping(uint256 => SpotInfo)) public spotInfos; // game => spot => spot info
-    mapping(address => mapping(address => uint256)) public userClaimableAmounts; // user => token => amount
-    mapping(uint256 => mapping(address => mapping(address => uint256))) public pendingPots; // Unprocessed pot, game => user => asset => amount
     mapping(address => uint256) public pots; // Processed pot, asset => amount
+    mapping(uint256 => mapping(address => mapping(address => uint256))) public pendingPots; // Unprocessed pot, game => user => asset => amount
+    mapping(address => mapping(address => uint256)) public userTreasury; // user => asset => amount
+    mapping(address => mapping(address => uint256)) public userClaimableAmounts; // user => token => amount
+    mapping(address => uint256) public globalPendingPots;
+    mapping(address => uint256) public globalUserTreasury;
+    mapping(address => uint256) public globalUserClaimableAmounts;
 
     // fee ratio
     uint256 public treasuryFeeRatio;
     uint256 public referralFeeRatio;
     uint256 public refereeFeeRatio;
-
+    uint256 public predefinedReferralFeeRatio;
+    uint256 public predefinedRefereeFeeRatio;
+    mapping(address => bool) public predefinedReferralUsers;
+    
     uint256 public maxGasPrice; // in wei uints
 }

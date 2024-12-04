@@ -3,7 +3,6 @@ pragma solidity ^0.8.0;
 
 import "./chainlink/VRFV2PlusWrapperConsumerBase.sol";
 import "./chainlink/VRFV2PlusClient.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "./interfaces/IERC20.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
@@ -38,6 +37,9 @@ contract OpenFacet is BaseFacet {
         uint256[] actualTiles;
         uint256[] actualTileCostsInAmount;
         uint256 actualPaidInAmount;
+        uint256 vrfBaseFee;
+        uint256 vrfWordFee;
+        uint256 vrfTotalFee;
     }
 
     function openSpotWithReferral(
@@ -49,7 +51,8 @@ contract OpenFacet is BaseFacet {
         string memory userUid,
         address referralUser,
         uint256 nonce,
-        bytes memory signature
+        bytes memory signature,
+        uint256 vrfBaseFee
     ) external {
         require(referralUser != address(0), 'Invalid Referral User');
         address payer = msg.sender;
@@ -57,7 +60,7 @@ contract OpenFacet is BaseFacet {
         require(!referralNonce[user][nonce], 'Already Used Nonce');
         _verifyReferralSignature(uidOwner, user, userUid, referralUser, nonce, signature);
         referralNonce[user][nonce] = true;
-        _openSpot(user, userUid, payer, gameId, tiles, asset, maxAvgAmount, referralUser);
+        _openSpot(user, userUid, payer, gameId, tiles, asset, maxAvgAmount, vrfBaseFee, referralUser);
     }
 
     function openSpotWithUID(
@@ -68,13 +71,14 @@ contract OpenFacet is BaseFacet {
         address user,
         string memory userUid,
         uint256 nonce,
-        bytes memory signature
+        bytes memory signature,
+        uint256 vrfBaseFee
     ) external {
         address payer = msg.sender;
         require(!uidNonce[userUid][nonce], 'Already Used Nonce');
         _verifyUidSignature(uidOwner, user, userUid, nonce, signature);
         uidNonce[userUid][nonce] = true;
-        _openSpot(user, userUid, payer, gameId, tiles, asset, maxAvgAmount, address(0));
+        _openSpot(user, userUid, payer, gameId, tiles, asset, maxAvgAmount, vrfBaseFee, address(0));
     }
 
     function openSpot(
@@ -82,10 +86,11 @@ contract OpenFacet is BaseFacet {
         uint256[] memory tiles,
         address user,
         address asset,
-        uint256 maxAvgAmount
+        uint256 maxAvgAmount,
+        uint256 vrfBaseFee
     ) external {
         address payer = msg.sender;
-        _openSpot(user, "", payer, gameId, tiles, asset, maxAvgAmount, address(0));
+        _openSpot(user, "", payer, gameId, tiles, asset, maxAvgAmount, vrfBaseFee, address(0));
     }
 
     function _openSpot(
@@ -96,6 +101,7 @@ contract OpenFacet is BaseFacet {
         uint256[] memory tiles,
         address asset,
         uint256 maxAvgAmount,
+        uint256 vrfBaseFee,
         address referralUser
     ) internal {
         require(tx.gasprice <= maxGasPrice, 'Max Gas Price Exceeded');
@@ -123,15 +129,17 @@ contract OpenFacet is BaseFacet {
             }
         }
 
+        (localStruct.vrfBaseFee, localStruct.vrfWordFee) = calculateVrfFeeInAmount(localStruct.unopenedTileCount);
         localStruct.tileCostsInAmount = calculateTileCostsInAmount(asset, gameId, localStruct.unopenedTileCount);
         for (uint256 i = 0; i < localStruct.unopenedTileCount; i++) {
             uint256 tile = localStruct.unopenedTiles[i];
             require(tile < gameInfo.totalSpots, 'Invalid Tile');
             localStruct.accumulatedTileCostInAmount = localStruct.accumulatedTileCostInAmount + localStruct.tileCostsInAmount[i];
-            if (localStruct.accumulatedTileCostInAmount <= maxAvgAmount * (i + 1)) {
+            if (localStruct.accumulatedTileCostInAmount + localStruct.vrfBaseFee <= maxAvgAmount * (i + 1) + vrfBaseFee) {
                 localStruct.actualTileCount++;
             }
         }
+
 
         require(localStruct.actualTileCount != 0, 'No Tiles Available for Purchase');
         localStruct.accumulatedTileCostInAmount = 0;
@@ -140,7 +148,7 @@ contract OpenFacet is BaseFacet {
         uint256 index = 0;
         for (uint256 i = 0; i < localStruct.unopenedTileCount; i++) {
             localStruct.accumulatedTileCostInAmount = localStruct.accumulatedTileCostInAmount + localStruct.tileCostsInAmount[i];
-            if (localStruct.accumulatedTileCostInAmount <= maxAvgAmount * (i + 1)) {
+            if (localStruct.accumulatedTileCostInAmount + localStruct.vrfBaseFee <= maxAvgAmount * (i + 1) + vrfBaseFee) {
                 localStruct.actualTiles[index] = localStruct.unopenedTiles[i];
                 localStruct.actualTileCostsInAmount[index] = localStruct.tileCostsInAmount[i];
                 localStruct.actualPaidInAmount = localStruct.actualPaidInAmount + localStruct.tileCostsInAmount[i];
@@ -155,7 +163,13 @@ contract OpenFacet is BaseFacet {
             }
         }
 
+        localStruct.vrfTotalFee = localStruct.vrfBaseFee + localStruct.vrfWordFee * localStruct.actualTileCount;
+        localStruct.vrfTotalFee = _getAssetInUsd(ETH, localStruct.vrfTotalFee);
+        localStruct.vrfTotalFee = getAmountFromUsd(asset, localStruct.vrfTotalFee);
+        IERC20(asset).transferFrom(payer, treasury, localStruct.vrfTotalFee);
+
         pendingPots[gameId][user][asset] = pendingPots[gameId][user][asset] + localStruct.actualPaidInAmount;
+        globalPendingPots[asset] = globalPendingPots[asset] + localStruct.actualPaidInAmount;
         IERC20(asset).transferFrom(payer, address(this), localStruct.actualPaidInAmount);
         uint256 requestId = _makeVrfNative(
             user,
@@ -189,6 +203,7 @@ contract OpenFacet is BaseFacet {
             _amounts[index] = amount;
             if (amount > 0) {
                 userClaimableAmounts[msg.sender][asset] = 0;
+                globalUserClaimableAmounts[asset] = globalUserClaimableAmounts[asset] - amount;
                 IERC20(asset).transfer(msg.sender, amount);
             }
         }
@@ -302,6 +317,18 @@ contract OpenFacet is BaseFacet {
         }
     }
 
+    function calculateVrfFee(uint256 numWords) public view returns (uint256 baseFeeInAmount, uint256 wordFeeInAmount, uint256 baseFeeInUsd, uint256 wordFeeInUsd) {
+        (baseFeeInAmount, wordFeeInAmount) = calculateVrfFeeInAmount(numWords);
+        baseFeeInUsd = _getAssetInUsd(ETH, baseFeeInAmount);
+        wordFeeInUsd = _getAssetInUsd(ETH, wordFeeInAmount);
+    }
+
+    function calculateVrfFeeInAmount(uint256 numWords) public view returns (uint256 baseFee, uint256 wordFee) {
+        uint256 oneWordFee = i_vrfV2PlusWrapper.calculateRequestPriceNative(callbackGasLimit, uint32(1));
+        uint256 twoWordFee = i_vrfV2PlusWrapper.calculateRequestPriceNative(callbackGasLimit, uint32(2));
+        wordFee = twoWordFee - oneWordFee;
+        baseFee = i_vrfV2PlusWrapper.calculateRequestPriceNative(callbackGasLimit, uint32(numWords)) - wordFee;
+    }
     // form VRFV2PlusWrapperConsumerBase.sol
     function requestRandomnessPayInNative(
         uint32 _callbackGasLimit,
@@ -337,8 +364,9 @@ contract OpenFacet is BaseFacet {
             address asset = assetList[assetIndex];
             uint256 amount = userTreasury[user][asset];
             userTreasury[user][asset] = 0;
+            globalUserTreasury[asset] = globalUserTreasury[asset] - amount;
             if (amount > 0) {
-                IERC20(asset).transferFrom(treasury, user, amount);
+                IERC20(asset).transfer(user, amount);
             }
             _amounts[assetIndex] = amount;
         }
@@ -357,6 +385,7 @@ contract OpenFacet is BaseFacet {
                 if (_amount > 0) {
                     amount = amount + _amount;
                     pendingPots[gameIndex][msg.sender][asset] = 0;
+                    globalPendingPots[asset] = globalPendingPots[asset] - _amount;
                 }
             }
             _amounts[assetIndex] = amount;
