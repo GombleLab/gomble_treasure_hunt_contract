@@ -24,6 +24,7 @@ contract OpenFacet is BaseFacet {
 
     event Claim(address user, address[] assets, uint256[] amounts);
     event ClaimPendingAsset(address user, address[] assets, uint256[] amounts);
+    event ClaimFlagFee(address user, address[] assets, uint256[] amounts);
     event ClaimPrivateTreasury(address user, address[] assets, uint256[] amounts);
 
     struct LocalOpenSpotStruct {
@@ -37,22 +38,23 @@ contract OpenFacet is BaseFacet {
         uint256[] actualTiles;
         uint256[] actualTileCostsInAmount;
         uint256 actualPaidInAmount;
-        uint256 vrfBaseFee;
-        uint256 vrfWordFee;
-        uint256 vrfTotalFee;
+        uint256 vrfBaseFeeInEth;
+        uint256 vrfWordFeeInEth;
+        uint256 vrfBaseFeeInAssetAmount;
+        uint256 vrfWordFeeInAssetAmount;
     }
 
     function openSpotWithReferral(
         uint256 gameId,
         uint256[] memory tiles,
         address asset,
-        uint256 maxAvgAmount,
+        uint256 maxAvgAmountInAsset,
         address user,
         string memory userUid,
         address referralUser,
         uint256 nonce,
         bytes memory signature,
-        uint256 vrfBaseFee
+        uint256 vrfBaseFeeInAssetAmount
     ) external {
         require(referralUser != address(0), 'Invalid Referral User');
         address payer = msg.sender;
@@ -60,25 +62,25 @@ contract OpenFacet is BaseFacet {
         require(!referralNonce[user][nonce], 'Already Used Nonce');
         _verifyReferralSignature(uidOwner, user, userUid, referralUser, nonce, signature);
         referralNonce[user][nonce] = true;
-        _openSpot(user, userUid, payer, gameId, tiles, asset, maxAvgAmount, vrfBaseFee, referralUser);
+        _openSpot(user, userUid, payer, gameId, tiles, asset, maxAvgAmountInAsset, vrfBaseFeeInAssetAmount, referralUser);
     }
 
     function openSpotWithUID(
         uint256 gameId,
         uint256[] memory tiles,
         address asset,
-        uint256 maxAvgAmount,
+        uint256 maxAvgAmountInAsset,
         address user,
         string memory userUid,
         uint256 nonce,
         bytes memory signature,
-        uint256 vrfBaseFee
+        uint256 vrfBaseFeeInAssetAmount
     ) external {
         address payer = msg.sender;
         require(!uidNonce[userUid][nonce], 'Already Used Nonce');
         _verifyUidSignature(uidOwner, user, userUid, nonce, signature);
         uidNonce[userUid][nonce] = true;
-        _openSpot(user, userUid, payer, gameId, tiles, asset, maxAvgAmount, vrfBaseFee, address(0));
+        _openSpot(user, userUid, payer, gameId, tiles, asset, maxAvgAmountInAsset, vrfBaseFeeInAssetAmount, address(0));
     }
 
     function openSpot(
@@ -86,11 +88,11 @@ contract OpenFacet is BaseFacet {
         uint256[] memory tiles,
         address user,
         address asset,
-        uint256 maxAvgAmount,
-        uint256 vrfBaseFee
+        uint256 maxAvgAmountInAsset,
+        uint256 vrfBaseFeeInAssetAmount
     ) external {
         address payer = msg.sender;
-        _openSpot(user, "", payer, gameId, tiles, asset, maxAvgAmount, vrfBaseFee, address(0));
+        _openSpot(user, "", payer, gameId, tiles, asset, maxAvgAmountInAsset, vrfBaseFeeInAssetAmount, address(0));
     }
 
     function _openSpot(
@@ -100,17 +102,17 @@ contract OpenFacet is BaseFacet {
         uint256 gameId,
         uint256[] memory tiles,
         address asset,
-        uint256 maxAvgAmount,
-        uint256 vrfBaseFee,
+        uint256 maxAvgAmountInAsset,
+        uint256 vrfBaseFeeInAssetAmount,
         address referralUser
     ) internal {
-        require(tx.gasprice <= maxGasPrice, 'Max Gas Price Exceeded');
         GameInfo memory gameInfo = gameInfos[gameId];
         GameMetaInfo memory gameMetaInfo = gameMetaInfos[gameId];
         require(tiles.length >= 1 && tiles.length <= gameInfo.maxTilesOpenableAtOnce, 'Invalid Tile Size');
         require(gameMetaInfo.isPlaying, 'Game Not in Progress');
         require(block.timestamp <= gameInfo.startTime + maxGameTime, 'Already Ended Game');
         require(gameMetaInfo.leftNumTicketTile != 0 || gameMetaInfo.leftNumTreasureTile != 0, 'No Ticket And Treasure');
+        require(asset != ETH, 'ETH is not supported');
         require(assets[asset], 'Not Supported Asset');
 
         LocalOpenSpotStruct memory localStruct;
@@ -129,13 +131,13 @@ contract OpenFacet is BaseFacet {
             }
         }
 
-        (localStruct.vrfBaseFee, localStruct.vrfWordFee) = calculateVrfFeeInAmount(localStruct.unopenedTileCount);
+        (localStruct.vrfBaseFeeInAssetAmount, localStruct.vrfWordFeeInAssetAmount) = calculateVrfFeeInAssetAmount(asset);
         localStruct.tileCostsInAmount = calculateTileCostsInAmount(asset, gameId, localStruct.unopenedTileCount);
         for (uint256 i = 0; i < localStruct.unopenedTileCount; i++) {
             uint256 tile = localStruct.unopenedTiles[i];
             require(tile < gameInfo.totalSpots, 'Invalid Tile');
             localStruct.accumulatedTileCostInAmount = localStruct.accumulatedTileCostInAmount + localStruct.tileCostsInAmount[i];
-            if (localStruct.accumulatedTileCostInAmount + localStruct.vrfBaseFee <= maxAvgAmount * (i + 1) + vrfBaseFee) {
+            if (localStruct.accumulatedTileCostInAmount + localStruct.vrfBaseFeeInAssetAmount <= maxAvgAmountInAsset * (i + 1) + vrfBaseFeeInAssetAmount) {
                 localStruct.actualTileCount++;
             }
         }
@@ -148,7 +150,7 @@ contract OpenFacet is BaseFacet {
         uint256 index = 0;
         for (uint256 i = 0; i < localStruct.unopenedTileCount; i++) {
             localStruct.accumulatedTileCostInAmount = localStruct.accumulatedTileCostInAmount + localStruct.tileCostsInAmount[i];
-            if (localStruct.accumulatedTileCostInAmount + localStruct.vrfBaseFee <= maxAvgAmount * (i + 1) + vrfBaseFee) {
+            if (localStruct.accumulatedTileCostInAmount + localStruct.vrfBaseFeeInAssetAmount <= maxAvgAmountInAsset * (i + 1) + vrfBaseFeeInAssetAmount) {
                 localStruct.actualTiles[index] = localStruct.unopenedTiles[i];
                 localStruct.actualTileCostsInAmount[index] = localStruct.tileCostsInAmount[i];
                 localStruct.actualPaidInAmount = localStruct.actualPaidInAmount + localStruct.tileCostsInAmount[i];
@@ -163,10 +165,7 @@ contract OpenFacet is BaseFacet {
             }
         }
 
-        localStruct.vrfTotalFee = localStruct.vrfBaseFee + localStruct.vrfWordFee * localStruct.actualTileCount;
-        localStruct.vrfTotalFee = _getAssetInUsd(ETH, localStruct.vrfTotalFee);
-        localStruct.vrfTotalFee = getAmountFromUsd(asset, localStruct.vrfTotalFee);
-        IERC20(asset).transferFrom(payer, treasury, localStruct.vrfTotalFee);
+        IERC20(asset).transferFrom(payer, treasury, localStruct.vrfBaseFeeInAssetAmount + localStruct.vrfWordFeeInAssetAmount * localStruct.actualTileCount);
 
         pendingPots[gameId][user][asset] = pendingPots[gameId][user][asset] + localStruct.actualPaidInAmount;
         globalPendingPots[asset] = globalPendingPots[asset] + localStruct.actualPaidInAmount;
@@ -253,28 +252,22 @@ contract OpenFacet is BaseFacet {
 
     function getGameOverview() external view returns (
         uint256 gameId,
-        uint256 startTime,
         SpotInfo[] memory tiles,
         address[] memory potAssets,
         uint256[] memory potAmounts,
         address[] memory winnerAssets,
         uint256[] memory winnerAmounts,
-        uint256 leftNumTicketTile,
-        uint256 leftNumTicket,
-        bool isPlaying,
+        GameInfo memory gameInfo,
+        GameMetaInfo memory gameMetaInfo,
         uint256 _minGameTime,
         uint256 _maxGameTime,
         address winner
     ) {
-        GameInfo memory gameInfo = gameInfos[lastGameId];
-        GameMetaInfo memory gameMetaInfo = gameMetaInfos[lastGameId];
+        gameInfo = gameInfos[lastGameId];
+        gameMetaInfo = gameMetaInfos[lastGameId];
         (tiles, potAssets, potAmounts) = getTiles(lastGameId);
         (winnerAssets, winnerAmounts) = getWinnerPrize(lastGameId);
         gameId = lastGameId;
-        startTime = gameInfo.startTime;
-        leftNumTicketTile = gameMetaInfo.leftNumTicketTile;
-        leftNumTicket = gameMetaInfo.leftNumTicket;
-        isPlaying = gameMetaInfo.isPlaying;
         _minGameTime = minGameTime;
         _maxGameTime = maxGameTime;
         winner = getWinner(lastGameId);
@@ -317,17 +310,21 @@ contract OpenFacet is BaseFacet {
         }
     }
 
-    function calculateVrfFee(uint256 numWords) public view returns (uint256 baseFeeInAmount, uint256 wordFeeInAmount, uint256 baseFeeInUsd, uint256 wordFeeInUsd) {
-        (baseFeeInAmount, wordFeeInAmount) = calculateVrfFeeInAmount(numWords);
-        baseFeeInUsd = _getAssetInUsd(ETH, baseFeeInAmount);
-        wordFeeInUsd = _getAssetInUsd(ETH, wordFeeInAmount);
+    function calculateVrfFeeInAssetAmount(address asset) public view returns (uint256 baseFeeInAsset, uint256 wordFeeInAsset) {
+        if (asset == ETH) {
+            (baseFeeInAsset, wordFeeInAsset) = calculateVrfFeeInEthAmount();
+        } else {
+            (uint256 baseFeeInEth, uint256 wordFeeInEth) = calculateVrfFeeInEthAmount();
+            baseFeeInAsset = convertAssetAmount(ETH, asset, baseFeeInEth);
+            wordFeeInAsset = convertAssetAmount(ETH, asset, wordFeeInEth);
+        }
     }
 
-    function calculateVrfFeeInAmount(uint256 numWords) public view returns (uint256 baseFee, uint256 wordFee) {
+    function calculateVrfFeeInEthAmount() public view returns (uint256 baseFee, uint256 wordFee) {
         uint256 oneWordFee = i_vrfV2PlusWrapper.calculateRequestPriceNative(callbackGasLimit, uint32(1));
         uint256 twoWordFee = i_vrfV2PlusWrapper.calculateRequestPriceNative(callbackGasLimit, uint32(2));
         wordFee = twoWordFee - oneWordFee;
-        baseFee = i_vrfV2PlusWrapper.calculateRequestPriceNative(callbackGasLimit, uint32(numWords)) - wordFee;
+        baseFee = oneWordFee - wordFee;
     }
     // form VRFV2PlusWrapperConsumerBase.sol
     function requestRandomnessPayInNative(
@@ -373,7 +370,6 @@ contract OpenFacet is BaseFacet {
         emit ClaimPrivateTreasury(user, assetList, _amounts);
     }
 
-    // claim for all games except the latest games
     function claimPendingAsset() external {
         require(lastGameId > 0, 'Minimum 1 Game Required');
         uint256[] memory _amounts = new uint256[](assetList.length);
@@ -397,6 +393,23 @@ contract OpenFacet is BaseFacet {
         emit ClaimPendingAsset(msg.sender, assetList, _amounts);
     }
 
+    function claimFlagFee(address[] memory assets, uint256[] memory amounts, uint256 nonce, bytes memory signature) external {
+        require(assets.length == amounts.length, 'Invalid Length');
+        require(!flagFeeNonce[nonce], 'Already Used Nonce');
+        _verifyFlagFeeSignature(flagFeeOwner, assets, msg.sender, amounts, nonce, signature);
+        flagFeeNonce[nonce] = true;
+
+        for(uint256 index = 0; index < assets.length; index++) {
+            address asset = assets[index];
+            uint256 amount = amounts[index];
+            require(flagPots[asset] >= amount, 'Insufficient Flag Fee');
+            if (amount > 0) {
+                flagPots[asset] = flagPots[asset] - amount;
+                IERC20(asset).transfer(msg.sender, amount);
+            }
+        }
+        emit ClaimFlagFee(msg.sender, assets, amounts);
+    }
     function getGameInfo(uint256 _gameId) external view returns (GameInfo memory) {
         return gameInfos[_gameId];
     }
@@ -433,6 +446,19 @@ contract OpenFacet is BaseFacet {
         bytes memory _signature
     ) internal pure {
         bytes32 messageHash = keccak256(abi.encode(_user, _userUid, referralUser, _nonce));
+        address signer = MessageHashUtils.toEthSignedMessageHash(messageHash).recover(_signature);
+        require(signer == _owner, 'Invalid Signature');
+    }
+
+    function _verifyFlagFeeSignature(
+        address _owner,
+        address[] memory _assets,
+        address _user,
+        uint256[] memory _amounts,
+        uint256 _nonce,
+        bytes memory _signature
+    ) internal pure {
+        bytes32 messageHash = keccak256(abi.encode(_assets, _user, _amounts, _nonce));
         address signer = MessageHashUtils.toEthSignedMessageHash(messageHash).recover(_signature);
         require(signer == _owner, 'Invalid Signature');
     }

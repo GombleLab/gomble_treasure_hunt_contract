@@ -128,6 +128,10 @@ contract Storage {
     uint256 public predefinedReferralFeeRatio;
     uint256 public predefinedRefereeFeeRatio;
     mapping(address => bool) public predefinedReferralUsers;
-    
-    uint256 public maxGasPrice; // in wei uints
+
+    // 2024-12-08
+    mapping(address => uint256) public flagPots;
+    address public flagFeeOwner;
+    mapping(uint256 => bool) public flagFeeNonce;
+    uint256 public flagFeeRatio;
 }

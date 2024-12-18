@@ -15,7 +15,7 @@ contract BaseFacet is Storage, Initializable {
     }
 
     function getAmountFromUsd(address asset, uint256 amountInUsd) public view returns (uint256) {
-        return (amountInUsd * (10 ** IERC20(asset).decimals()) / _getAssetPriceInUsd(asset));
+        return (amountInUsd * (10 ** _getDecimals(asset)) / _getAssetPriceInUsd(asset));
     }
 
     function _getAssetInUsd(address asset, uint256 amount) internal view returns (uint256) {
@@ -51,5 +51,14 @@ contract BaseFacet is Storage, Initializable {
         }
 
         return (assetList, _amounts);
+    }
+
+    function convertAssetAmount(
+        address fromAsset,
+        address toAsset,
+        uint256 fromAmount
+    ) public view returns (uint256) {
+        uint256 amountInUsd = _getAssetInUsd(fromAsset, fromAmount);
+        return getAmountFromUsd(toAsset, amountInUsd);
     }
 }

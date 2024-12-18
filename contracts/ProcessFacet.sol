@@ -20,7 +20,7 @@ contract ProcessFacet is VRFV2PlusWrapperConsumerBase {
         uint256 ticketNum
     );
     event EndGame(uint256 gameId);
-    event TreasureFound(uint256 gameId, uint256 tile, address winner, address[] assets, uint256[] amounts, string userUid);
+    event TreasureFound(uint256 gameId, uint256 tile, address winner, address[] assets, uint256[] amounts, string userUid, uint256 flagFeeRatio);
 
     struct LocalProcessStruct {
         uint256 tileCostInAmount;
@@ -28,6 +28,7 @@ contract ProcessFacet is VRFV2PlusWrapperConsumerBase {
         uint256 treasuryFeeAmount;
         uint256 referralFeeAmount;
         uint256 refereeFeeAmount;
+        uint256 flagFeeAmount;
         uint256 ticketNum;
         address[] potAssets;
         uint256[] potAmounts;
@@ -53,28 +54,27 @@ contract ProcessFacet is VRFV2PlusWrapperConsumerBase {
                     _setSpotResult(gameId, tile, TileType.NONE, localStruct.tileCostInAmount, requestStatus.paidAsset, requestStatus.user, requestStatus.userUid);
                 }
 
-                if (spotInfos[gameId][tile].withReferral) {
-                    (localStruct.refereeFeeAmount, localStruct.referralFeeAmount) = _processReferralFee(spotInfos[gameId][tile].referralUser, requestStatus.user, requestStatus.paidAsset, localStruct.tileCostInAmount);
-                }   
+                (localStruct.treasuryFeeAmount, localStruct.refereeFeeAmount, localStruct.referralFeeAmount, localStruct.flagFeeAmount, localStruct.tileNetCostInAmount) = _calculateFee(spotInfos[gameId][tile].withReferral, spotInfos[gameId][tile].referralUser, localStruct.tileCostInAmount);                
                 
+                _processReferralFee(spotInfos[gameId][tile].referralUser, requestStatus.user, requestStatus.paidAsset, localStruct.refereeFeeAmount, localStruct.referralFeeAmount);
+                _processFlagFee(requestStatus.paidAsset, localStruct.flagFeeAmount);
                 pendingPots[gameId][requestStatus.user][requestStatus.paidAsset] = pendingPots[gameId][requestStatus.user][requestStatus.paidAsset] - localStruct.tileCostInAmount ;
                 globalPendingPots[requestStatus.paidAsset] = globalPendingPots[requestStatus.paidAsset] - localStruct.tileCostInAmount;
-                IERC20(requestStatus.paidAsset).transfer(treasury, localStruct.tileCostInAmount);
+                IERC20(requestStatus.paidAsset).transfer(treasury, localStruct.tileNetCostInAmount + localStruct.treasuryFeeAmount);
                 continue;
             }
 
             // The actual point at which the fee is charged.
-            if (spotInfos[gameId][tile].withReferral) {
-                (localStruct.refereeFeeAmount, localStruct.referralFeeAmount) = _processReferralFee(spotInfos[gameId][tile].referralUser, requestStatus.user, requestStatus.paidAsset, localStruct.tileCostInAmount);
-            }
-
-            localStruct.treasuryFeeAmount = TreasureHuntLib.calculateRatio(localStruct.tileCostInAmount, treasuryFeeRatio);
-            localStruct.tileNetCostInAmount = localStruct.tileCostInAmount - (localStruct.treasuryFeeAmount - localStruct.referralFeeAmount - localStruct.refereeFeeAmount);
+            (localStruct.treasuryFeeAmount, localStruct.refereeFeeAmount, localStruct.referralFeeAmount, localStruct.flagFeeAmount, localStruct.tileNetCostInAmount) = _calculateFee(spotInfos[gameId][tile].withReferral, spotInfos[gameId][tile].referralUser, localStruct.tileCostInAmount);
 
             pendingPots[gameId][requestStatus.user][requestStatus.paidAsset] = pendingPots[gameId][requestStatus.user][requestStatus.paidAsset] - localStruct.tileCostInAmount;
             globalPendingPots[requestStatus.paidAsset] = globalPendingPots[requestStatus.paidAsset] - localStruct.tileCostInAmount;
-            IERC20(requestStatus.paidAsset).transfer(treasury, localStruct.tileCostInAmount - localStruct.tileNetCostInAmount);
-            pots[requestStatus.paidAsset] = pots[requestStatus.paidAsset] + localStruct.tileNetCostInAmount;
+
+            IERC20(requestStatus.paidAsset).transfer(treasury, localStruct.treasuryFeeAmount);
+
+            pots[requestStatus.paidAsset] += localStruct.tileNetCostInAmount;
+            _processReferralFee(spotInfos[gameId][tile].referralUser, requestStatus.user, requestStatus.paidAsset, localStruct.refereeFeeAmount, localStruct.referralFeeAmount);
+            _processFlagFee(requestStatus.paidAsset, localStruct.flagFeeAmount);
 
             TileType result = _checkResult(
                 requestStatus.randomWords[index],
@@ -168,18 +168,39 @@ contract ProcessFacet is VRFV2PlusWrapperConsumerBase {
                 globalUserClaimableAmounts[asset] = globalUserClaimableAmounts[asset] + pots[asset];
                 pots[asset] = 0;
             }
-            emit TreasureFound(gameMetaInfo.id, gameMetaInfo.treasureTile, winner, assetList, _prizes, userUid);
+            emit TreasureFound(gameMetaInfo.id, gameMetaInfo.treasureTile, winner, assetList, _prizes, userUid, flagFeeRatio);
             return;
         }
-        emit TreasureFound(gameMetaInfo.id, gameMetaInfo.treasureTile, address(0), assetList, new uint256[](assetList.length), userUid);
+        emit TreasureFound(gameMetaInfo.id, gameMetaInfo.treasureTile, address(0), assetList, new uint256[](assetList.length), userUid, flagFeeRatio);
     }
 
-    function _processReferralFee(address referralUser, address refereeUser, address paidAsset, uint256 tileCostInAmount) internal returns (uint256, uint256) {
-        (uint256 refereeFeeAmount, uint256 referralFeeAmount) = _calculateReferralFee(referralUser, tileCostInAmount);
+    function _processReferralFee(address referralUser, address refereeUser, address paidAsset, uint256 refereeFeeAmount, uint256 referralFeeAmount) internal {
         userTreasury[refereeUser][paidAsset] = userTreasury[refereeUser][paidAsset] + refereeFeeAmount;
         userTreasury[referralUser][paidAsset] = userTreasury[referralUser][paidAsset] + referralFeeAmount;
         globalUserTreasury[paidAsset] = globalUserTreasury[paidAsset] + refereeFeeAmount + referralFeeAmount;
-        return (refereeFeeAmount, referralFeeAmount);
+    }
+
+    function _processFlagFee(address paidAsset, uint256 flagFeeAmount) internal {
+        flagPots[paidAsset] += flagFeeAmount;
+    }
+
+ function _calculateFee(bool withReferral, address referralUser, uint256 tileCostInAmount) internal view returns (uint256 treasuryFeeAmount, uint256 refereeFeeAmount, uint256 referralFeeAmount, uint256 flagFeeAmount, uint256 potAmount) {
+        if (withReferral) {
+            if (predefinedReferralUsers[referralUser]) {
+                refereeFeeAmount = TreasureHuntLib.calculateRatio(tileCostInAmount, predefinedRefereeFeeRatio);
+                referralFeeAmount = TreasureHuntLib.calculateRatio(tileCostInAmount, predefinedReferralFeeRatio);
+                treasuryFeeAmount = TreasureHuntLib.calculateRatio(tileCostInAmount, treasuryFeeRatio - (predefinedRefereeFeeRatio + predefinedReferralFeeRatio));
+            } else {
+                refereeFeeAmount = TreasureHuntLib.calculateRatio(tileCostInAmount, refereeFeeRatio);
+                referralFeeAmount = TreasureHuntLib.calculateRatio(tileCostInAmount, referralFeeRatio);
+                treasuryFeeAmount = TreasureHuntLib.calculateRatio(tileCostInAmount, treasuryFeeRatio - (refereeFeeRatio + referralFeeRatio));
+            }
+        } else {
+            treasuryFeeAmount = TreasureHuntLib.calculateRatio(tileCostInAmount, treasuryFeeRatio);
+        }
+        potAmount = tileCostInAmount - (treasuryFeeAmount + refereeFeeAmount + referralFeeAmount);
+        flagFeeAmount = TreasureHuntLib.calculateRatio(potAmount, flagFeeRatio);
+        treasuryFeeAmount -= flagFeeAmount;
     }
 
     function _calculateReferralFee(address referralUser, uint256 tileCostInAmount) internal view returns (uint256, uint256) {

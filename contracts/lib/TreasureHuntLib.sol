@@ -2,9 +2,9 @@
 pragma solidity ^0.8.0;
 
 library TreasureHuntLib {
-    uint256 internal constant MANTISSA = 1e18;
-
+    uint256 internal constant FEE_RATIO_DENOMINATOR = 10000;
+    
     function calculateRatio(uint256 value, uint256 ratio) internal pure returns (uint256) {
-        return value * ratio * MANTISSA / (100 * MANTISSA);
+        return value * ratio / FEE_RATIO_DENOMINATOR;
     }
 }

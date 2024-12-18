@@ -6,13 +6,13 @@ import "./interfaces/IERC20.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import "./BaseFacet.sol";
+import "./lib/TreasureHuntLib.sol";
 
 contract ConfigurationFacet is BaseFacet {
     event SetVrfConfig(uint32 callbackGasLimit, uint16 requestConfirmations);
     event TerminateGame(uint256 gameId);
     event SetGameConfig(uint256 minimumPotSizeInUsd, uint256 minGame, uint256 maxGame);
-    event SetFeeConfig(uint256 treasuryFeeRatio, uint256 referralFeeRatio, uint256 refereeFeeRatio, uint256 predefinedReferralFeeRatio, uint256 predefinedRefereeFeeRatio);
-    event SetMaxGasPrice(uint256 maxGasPrice);
+    event SetFeeConfig(uint256 treasuryFeeRatio, uint256 referralFeeRatio, uint256 refereeFeeRatio, uint256 predefinedReferralFeeRatio, uint256 predefinedRefereeFeeRatio, uint256 flagFeeRatio);
     event TransferUidOwnership(address oldOwner, address newOwner);
     event TransferOwnership(address oldOwner, address newOwner);
 
@@ -29,6 +29,8 @@ contract ConfigurationFacet is BaseFacet {
         address[] assets,
         uint256[] amounts
     );
+
+    event TransferFlagFeeOwnership(address oldOwner, address newOwner);
 
     modifier onlyOwner() {
         require(owner == msg.sender, "Invalid Owner");
@@ -72,12 +74,12 @@ contract ConfigurationFacet is BaseFacet {
         ethOracle = AggregatorV3Interface(_ethOracle);
         callbackGasLimit = 1500000;
         requestConfirmations = 1;
-        treasuryFeeRatio = 15;
-        referralFeeRatio = 1;
-        refereeFeeRatio = 1;
-        predefinedReferralFeeRatio = 2;
-        predefinedRefereeFeeRatio = 2;
-        maxGasPrice = 100000000;
+        treasuryFeeRatio = 15; // 2024-12-08 -> 1500
+        referralFeeRatio = 1; // 2024-12-08 -> 100
+        refereeFeeRatio = 1; // 2024-12-08 -> 100
+        predefinedReferralFeeRatio = 2; // 2024-12-08 -> 200
+        predefinedRefereeFeeRatio = 2; // 2024-12-08 -> 200
+        flagFeeRatio = 1; // 2024-12-08 -> 100
     }
 
     function initGame(
@@ -91,7 +93,6 @@ contract ConfigurationFacet is BaseFacet {
         uint256 maxTilesOpenableAtOnce,
         address initialPotAsset
     ) external onlyUidOwner {
-        require(tx.gasprice <= maxGasPrice, 'Max Gas Price Exceeded');
         require(assets[initialPotAsset], 'Not Supported Asset');
         require(
             totalSpots >= maxTilesOpenableAtOnce
@@ -164,6 +165,12 @@ contract ConfigurationFacet is BaseFacet {
         emit TransferOwnership(oldOwner, newOwner);
     }
 
+    function transferFlagFeeOwnership(address newOwner) external onlyOwner {
+        address oldOwner = flagFeeOwner;
+        flagFeeOwner = newOwner;
+        emit TransferFlagFeeOwnership(oldOwner, newOwner);
+    }
+
     // configuration
     function setVrfConfig(
         uint32 _callbackGasLimit,
@@ -197,21 +204,18 @@ contract ConfigurationFacet is BaseFacet {
         uint256 _referralFeeRatio,
         uint256 _refereeFeeRatio,
         uint256 _predefinedReferralFeeRatio,
-        uint256 _predefinedRefereeFeeRatio
+        uint256 _predefinedRefereeFeeRatio,
+        uint256 _flagFeeRatio
     ) external onlyOwner {
-        require(_treasuryFeeRatio + _referralFeeRatio + _refereeFeeRatio <= 100, "Invalid Fee Ratio");
-        require(_treasuryFeeRatio + _predefinedReferralFeeRatio + _predefinedRefereeFeeRatio <= 100, "Invalid Predefined Fee Ratio");
+        require(_treasuryFeeRatio + _referralFeeRatio + _refereeFeeRatio <= TreasureHuntLib.FEE_RATIO_DENOMINATOR, "Invalid Fee Ratio");
+        require(_treasuryFeeRatio + _predefinedReferralFeeRatio + _predefinedRefereeFeeRatio <= TreasureHuntLib.FEE_RATIO_DENOMINATOR, "Invalid Predefined Fee Ratio");
         treasuryFeeRatio = _treasuryFeeRatio;
         referralFeeRatio = _referralFeeRatio;
         refereeFeeRatio = _refereeFeeRatio;
         predefinedReferralFeeRatio = _predefinedReferralFeeRatio;
         predefinedRefereeFeeRatio = _predefinedRefereeFeeRatio;
-        emit SetFeeConfig(_treasuryFeeRatio, _referralFeeRatio, _refereeFeeRatio, _predefinedReferralFeeRatio, _predefinedRefereeFeeRatio);
-    }
-
-    function setMaxGasPrice(uint256 _maxGasPrice) external onlyOwner {
-        maxGasPrice = _maxGasPrice;
-        emit SetMaxGasPrice(_maxGasPrice);
+        flagFeeRatio = _flagFeeRatio;
+        emit SetFeeConfig(_treasuryFeeRatio, _referralFeeRatio, _refereeFeeRatio, _predefinedReferralFeeRatio, _predefinedRefereeFeeRatio, _flagFeeRatio);
     }
 
     function _checkAndResolveEnoughBalanceInTreasureHunt() internal {
@@ -234,6 +238,6 @@ contract ConfigurationFacet is BaseFacet {
     }
 
     function _getAmountToMaintain(address asset) internal view returns (uint256) {
-        return pots[asset] + globalPendingPots[asset] + globalUserTreasury[asset] + globalUserClaimableAmounts[asset];
+        return pots[asset] + globalPendingPots[asset] + globalUserTreasury[asset] + globalUserClaimableAmounts[asset] + flagPots[asset];
     }
 }
