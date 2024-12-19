@@ -136,7 +136,7 @@ contract OpenFacet is BaseFacet {
         for (uint256 i = 0; i < localStruct.unopenedTileCount; i++) {
             uint256 tile = localStruct.unopenedTiles[i];
             require(tile < gameInfo.totalSpots, 'Invalid Tile');
-            localStruct.accumulatedTileCostInAmount = localStruct.accumulatedTileCostInAmount + localStruct.tileCostsInAmount[i];
+            localStruct.accumulatedTileCostInAmount = localStruct.accumulatedTileCostInAmount + localStruct.tileCostsInAmount[i] + localStruct.vrfWordFeeInAssetAmount;
             if (localStruct.accumulatedTileCostInAmount + localStruct.vrfBaseFeeInAssetAmount <= maxAvgAmountInAsset * (i + 1) + vrfBaseFeeInAssetAmount) {
                 localStruct.actualTileCount++;
             }
@@ -149,7 +149,7 @@ contract OpenFacet is BaseFacet {
         localStruct.actualTileCostsInAmount = new uint256[](localStruct.actualTileCount);
         uint256 index = 0;
         for (uint256 i = 0; i < localStruct.unopenedTileCount; i++) {
-            localStruct.accumulatedTileCostInAmount = localStruct.accumulatedTileCostInAmount + localStruct.tileCostsInAmount[i];
+            localStruct.accumulatedTileCostInAmount = localStruct.accumulatedTileCostInAmount + localStruct.tileCostsInAmount[i] + localStruct.vrfWordFeeInAssetAmount;
             if (localStruct.accumulatedTileCostInAmount + localStruct.vrfBaseFeeInAssetAmount <= maxAvgAmountInAsset * (i + 1) + vrfBaseFeeInAssetAmount) {
                 localStruct.actualTiles[index] = localStruct.unopenedTiles[i];
                 localStruct.actualTileCostsInAmount[index] = localStruct.tileCostsInAmount[i];
