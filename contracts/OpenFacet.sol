@@ -372,6 +372,9 @@ contract OpenFacet is BaseFacet {
 
     function claimPendingAsset() external {
         require(lastGameId > 0, 'Minimum 1 Game Required');
+        GameMetaInfo memory gameMetaInfo = gameMetaInfos[lastGameId];
+        require(!gameMetaInfo.isPlaying, 'Game is in Progress');
+
         uint256[] memory _amounts = new uint256[](assetList.length);
         for(uint256 assetIndex = 0; assetIndex < assetList.length; assetIndex++) {
             address asset = assetList[assetIndex];
